@@ -109,7 +109,6 @@ def main(swf_file):
         convert_to_dds_dxt5(tex_dir)
         
         # 4. Build Arena Files (.rx2 and .rps3)
-        # Using ARENA_ID 0x343534 as discussed previously
         print(f"Building Arena files for {base_name}...")
         
         # XBOX
