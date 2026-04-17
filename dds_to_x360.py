@@ -223,17 +223,6 @@ def compute_packed_mip_offsets_OLD(mip_width, mip_height, orig_width, orig_heigh
     return sx, sy
 
 def compute_packed_mip_offsets(mip_infos, is_wider):
-    """
-    Compute (sx_offset, sy_offset) in block units for each packed mip.
-
-    Square / taller (height >= width):
-      sx = first_bw >> pl            counts down: 4,2,1,0,0,...
-      sy = num_packed - pl           counts down when sx hits 0
-
-    Wider (width > height):
-      sy = first_bh >> pl            counts down: 4,2,1,0,0,...
-      sx = first_bw >> (pl-log2_bh)  counts down when sy hits 0
-    """
     packed = [m for m in mip_infos if m['is_packed']]
     if not packed:
         return {}
