@@ -194,10 +194,6 @@ FORMAT_MAP = {
 
 def compute_packed_mip_offsets_OLD(mip_width, mip_height, orig_width, orig_height,
                            pitch, block_size, is_wider):
-    """
-    Mirror the C++ packed-mip sx/sy offset logic.
-    Returns (sx_offset, sy_offset) in block units.
-    """
     orig_bw = max(1, mip_width  // block_size)
     orig_bh = max(1, mip_height // block_size)
 
