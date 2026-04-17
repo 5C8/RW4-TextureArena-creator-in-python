@@ -187,7 +187,6 @@ def tile_level(src_data, width, height, pitch, is_compressed,
 
 FORMAT_MAP = {
     # pitch = data bytes per block (used for tiling)
-    # hdr_pitch = GPU register Pitch field value (always 16 for BCn, 4 for RGBA)
     b'DXT1': {'idx': 18, 'pitch': 8, 'comp': True},
     b'DXT5': {'idx': 20, 'pitch': 16, 'comp': True},
     None:    {'idx': 6,  'pitch': 4,  'comp': False},
