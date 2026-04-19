@@ -3,7 +3,7 @@ import sys
 import struct
 import glob
 from rw4_writer import TextureEntry, PS3Format, write_rps3, write_rx2
-from dds_to_x360 import generate_header, tile_level, FORMAT_MAP
+from dds_to_x360 import tile_dds_for_xbox
 
 def get_dds_info(dds_path):
     """Basic DDS header parser."""
@@ -45,14 +45,10 @@ def process_folder(input_folder, platform="XBOX"):
         internal_name = f"{folder_base}\\{name_no_ext}.Texture"
         
         w, h, mips, fourcc, raw_data = get_dds_info(full_path)
-        f_info = FORMAT_MAP.get(fourcc, FORMAT_MAP[None])
 
         if platform == "XBOX":
-            # 1. Use dds_to_x360 logic to get the 24-byte fetch constant
-            fetch_constant = generate_header(w, h, mips, f_info['idx'], 0)
-            
-            # 2. Use dds_to_x360 tiling logic
-            tiled_data = tile_level(raw_data, w, h, f_info['pitch'], f_info['comp'])
+            fetch_constant, chunks  = tile_dds_for_xbox(full_path)
+            tiled_data = b"".join(chunks)
             
             entries.append(TextureEntry(
                 name=internal_name,
@@ -84,17 +80,15 @@ def process_single_texture(full_path, mode, platform, folder_base):
     if name_no_ext.endswith(".Texture"):
         name_no_ext = name_no_ext[:-8]
     if mode == "multi":
-        internal_name = f"{folder_base}\\{name_no_ext}.Texture"
+        internal_name = f"{name_no_ext}.Texture" #{folder_base}\\
     else:
         internal_name = f"{name_no_ext}.Texture"
 
     w, h, mips, fourcc, raw_data = get_dds_info(full_path)
-    f_info = FORMAT_MAP.get(fourcc, FORMAT_MAP[None])
 
     if platform == "xbox":
-        # Apply Xbox tiling and header generation
-        fetch_constant = generate_header(w, h, mips, f_info['idx'], f_info['pitch'])
-        tiled_data = tile_level(raw_data, w, h, f_info['pitch'], f_info['comp'])
+        fetch_constant, chunks  = tile_dds_for_xbox(full_path)
+        tiled_data = b"".join(chunks)
         
         return TextureEntry(
             name=internal_name,

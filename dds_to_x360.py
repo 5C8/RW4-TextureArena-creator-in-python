@@ -12,10 +12,10 @@ def finalize_xenos_dw(dw):
     reversed_dw = int(binary_str[::-1], 2)
     return struct.pack(">I", reversed_dw)
 
-def generate_header(Width, Height, Mips, DataFormat, MipAddress):
+def generate_header(Width, Height, Mips, DataFormat, HdrPitch, MipAddress, Endian=1, SwizzleY=2):
     # --- DWORD 0 ---
     Tiled = 1
-    Pitch = 16
+    Pitch = HdrPitch
     Padding = 0
     MultiSample = 0
     ClampZ = 0
@@ -44,7 +44,6 @@ def generate_header(Width, Height, Mips, DataFormat, MipAddress):
     ClampPolicy = 0
     Stacked     = 0
     RequestSize = 0
-    Endian      = 1
     dw1 = (breverse(BaseAddress, 20) << 0)  | \
           (breverse(ClampPolicy, 1)  << 20) | \
           (breverse(Stacked, 1)      << 21) | \
@@ -62,7 +61,6 @@ def generate_header(Width, Height, Mips, DataFormat, MipAddress):
     MagFilter = 0
     SwizzleW = 0
     SwizzleZ = 3
-    SwizzleY = 2
     SwizzleX = 1
     dw3 = (breverse(AnisoFilter, 3) << 4)  | \
           (breverse(MipFilter, 2) << 7)  | \
@@ -185,40 +183,131 @@ def tile_level(src_data, width, height, pitch, is_compressed,
 
 # --- FORMAT MAP ---
 
-FORMAT_MAP = {
-    # pitch = data bytes per block (used for tiling)
-    b'DXT1': {'idx': 18, 'pitch': 8, 'comp': True},
-    b'DXT5': {'idx': 20, 'pitch': 16, 'comp': True},
-    None:    {'idx': 6,  'pitch': 4,  'comp': False},
+# FourCC-identified compressed formats
+# pitch     = data bytes per block (used for tiling)
+# hdr_pitch = GPU register Pitch field value (16 for all BCn)
+# endian    = Xenos endian swap mode (1 = swap 16-bit pairs, as used by block-compressed)
+FOURCC_FORMAT_MAP = {
+    b'DXT1': {'idx': 18, 'pitch': 8,  'hdr_pitch': 16, 'comp': True,  'endian': 1},
+    b'DXT3': {'idx': 19, 'pitch': 16, 'hdr_pitch': 16, 'comp': True,  'endian': 1},
+    b'DXT5': {'idx': 20, 'pitch': 16, 'hdr_pitch': 16, 'comp': True,  'endian': 1},
+    b'ATI1': {'idx': 58, 'pitch': 8,  'hdr_pitch': 16, 'comp': True,  'endian': 1},  # DXT3A
+    b'ATI2': {'idx': 49, 'pitch': 16, 'hdr_pitch': 16, 'comp': True,  'endian': 1},  # DXN/BC5
+    b'BC4U': {'idx': 58, 'pitch': 8,  'hdr_pitch': 16, 'comp': True,  'endian': 1},  # DXT3A
+    b'BC5U': {'idx': 49, 'pitch': 16, 'hdr_pitch': 16, 'comp': True,  'endian': 1},  # DXN
 }
 
-def compute_packed_mip_offsets_OLD(mip_width, mip_height, orig_width, orig_height,
-                           pitch, block_size, is_wider):
-    orig_bw = max(1, mip_width  // block_size)
-    orig_bh = max(1, mip_height // block_size)
+# DX10 DXGI format codes (when FourCC == b'DX10', read from extended header)
+DXGI_FORMAT_MAP = {
+    71:  {'idx': 18, 'pitch': 8,  'hdr_pitch': 16, 'comp': True,  'endian': 1},  # BC1_UNORM (DXT1)
+    74:  {'idx': 19, 'pitch': 16, 'hdr_pitch': 16, 'comp': True,  'endian': 1},  # BC2_UNORM (DXT3)
+    77:  {'idx': 20, 'pitch': 16, 'hdr_pitch': 16, 'comp': True,  'endian': 1},  # BC3_UNORM (DXT5)
+    80:  {'idx': 58, 'pitch': 8,  'hdr_pitch': 16, 'comp': True,  'endian': 1},  # BC4_UNORM
+    83:  {'idx': 49, 'pitch': 16, 'hdr_pitch': 16, 'comp': True,  'endian': 1},  # BC5_UNORM
+    28:  {'idx': 6,  'pitch': 4,  'hdr_pitch': 4,  'comp': False, 'endian': 2},  # R8G8B8A8_UNORM
+    87:  {'idx': 6,  'pitch': 4,  'hdr_pitch': 4,  'comp': False, 'endian': 2},  # B8G8R8A8_UNORM
+    56:  {'idx': 4,  'pitch': 2,  'hdr_pitch': 2,  'comp': False, 'endian': 1},  # B5G6R5_UNORM
+    57:  {'idx': 3,  'pitch': 2,  'hdr_pitch': 2,  'comp': False, 'endian': 1},  # B5G5R5A1_UNORM
+    35:  {'idx': 26, 'pitch': 8,  'hdr_pitch': 8,  'comp': False, 'endian': 2},  # R16G16B16A16_UNORM
+    10:  {'idx': 25, 'pitch': 4,  'hdr_pitch': 4,  'comp': False, 'endian': 2},  # R16G16_UNORM
+    56:  {'idx': 24, 'pitch': 2,  'hdr_pitch': 2,  'comp': False, 'endian': 1},  # R16_UNORM
+    54:  {'idx': 32, 'pitch': 8,  'hdr_pitch': 8,  'comp': False, 'endian': 2},  # R16G16B16A16_FLOAT
+    34:  {'idx': 31, 'pitch': 4,  'hdr_pitch': 4,  'comp': False, 'endian': 2},  # R16G16_FLOAT
+    54:  {'idx': 30, 'pitch': 2,  'hdr_pitch': 2,  'comp': False, 'endian': 1},  # R16_FLOAT
+    2:   {'idx': 38, 'pitch': 16, 'hdr_pitch': 16, 'comp': False, 'endian': 2},  # R32G32B32A32_FLOAT
+    16:  {'idx': 37, 'pitch': 8,  'hdr_pitch': 8,  'comp': False, 'endian': 2},  # R32G32_FLOAT
+    41:  {'idx': 36, 'pitch': 4,  'hdr_pitch': 4,  'comp': False, 'endian': 2},  # R32_FLOAT
+}
 
-    if is_wider:
-        # width > height
-        threshold = 2 / max(1, 16 // orig_height)
-        if orig_bh > threshold:
-            sy = orig_bh * max(1, 16 // orig_height)
-            sx = 0
-        else:
-            sx = 4 * mip_width // block_size
-            sy = 0
-    else:
-        # height >= width (square falls here)
-        threshold = 2 / max(1, 16 // orig_width)
-        if orig_bw > threshold:
-            sx = orig_bw * max(1, 16 // orig_width)
-            sy = 0
-        else:
-            sx = 0
-            sy = 4 * mip_height // block_size
+def identify_uncompressed_format(dds_header):
+    """
+    Identifies an uncompressed DDS pixel format from the pixel format block.
+    Returns a format info dict or None if unrecognized.
 
-    return sx, sy
+    DDS pixel format (DDSPF) layout within the 124-byte header (offsets relative to start of header):
+      offset 76: dwSize (4)
+      offset 80: dwFlags (4)
+      offset 84: dwFourCC (4)
+      offset 88: dwRGBBitCount (4)
+      offset 92: dwRBitMask (4)
+      offset 96: dwGBitMask (4)
+      offset 100: dwBBitMask (4)
+      offset 104: dwABitMask (4)
+    """
+    import struct
+    pf_flags    = struct.unpack("<I", dds_header[76:80])[0]
+    bit_count   = struct.unpack("<I", dds_header[84:88])[0]
+    r_mask      = struct.unpack("<I", dds_header[88:92])[0]
+    g_mask      = struct.unpack("<I", dds_header[92:96])[0]
+    b_mask      = struct.unpack("<I", dds_header[96:100])[0]
+    a_mask      = struct.unpack("<I", dds_header[100:104])[0]
 
-def compute_packed_mip_offsets(mip_infos, is_wider):
+    DDPF_RGB       = 0x40
+    DDPF_ALPHA     = 0x02
+    DDPF_LUMINANCE = 0x20000
+
+    bpp = bit_count // 8  # bytes per pixel
+
+    # Match by bit masks
+    # 32-bit RGBA/RGBX
+    if bit_count == 32 and b_mask == 0xFF and g_mask == 0xFF00 and r_mask == 0xFF0000:
+        # ARGB8 or XRGB8  -> 8_8_8_8
+        return {'idx': 6,  'pitch': 4, 'hdr_pitch': 4,  'comp': False, 'endian': 2}
+    if bit_count == 32 and r_mask == 0xFF and g_mask == 0xFF00 and b_mask == 0xFF0000:
+        # ABGR8 -> 8_8_8_8
+        return {'idx': 6,  'pitch': 4, 'hdr_pitch': 4,  'comp': False, 'endian': 2}
+    # 16-bit colour
+    if bit_count == 16 and r_mask == 0xF800 and g_mask == 0x07E0 and b_mask == 0x001F:
+        return {'idx': 4,  'pitch': 2, 'hdr_pitch': 2,  'comp': False, 'endian': 1}  # R5G6B5
+    if bit_count == 16 and r_mask == 0x7C00 and g_mask == 0x03E0 and b_mask == 0x001F:
+        return {'idx': 3,  'pitch': 2, 'hdr_pitch': 2,  'comp': False, 'endian': 1}  # A1R5G5B5
+    if bit_count == 16 and r_mask == 0x0F00 and g_mask == 0x00F0 and b_mask == 0x000F:
+        return {'idx': 15, 'pitch': 2, 'hdr_pitch': 2,  'comp': False, 'endian': 1}  # A4R4G4B4
+    # Luminance / alpha
+    if bit_count == 8  and (pf_flags & (DDPF_LUMINANCE | DDPF_ALPHA | DDPF_RGB)):
+        return {'idx': 2,  'pitch': 1, 'hdr_pitch': 1,  'comp': False, 'endian': 1}  # L8 / A8
+    if bit_count == 16 and a_mask == 0xFF00 and (r_mask == 0xFF or g_mask == 0xFF):
+        return {'idx': 10, 'pitch': 2, 'hdr_pitch': 2,  'comp': False, 'endian': 1}  # A8L8
+    if bit_count == 16 and r_mask == 0xFFFF and a_mask == 0 and g_mask == 0 and b_mask == 0:
+        return {'idx': 24, 'pitch': 2, 'hdr_pitch': 2,  'comp': False, 'endian': 1}  # L16
+    # HDR / float formats (identified by FourCC in calling code, but cover RGBA16 here)
+    if bit_count == 64:
+        return {'idx': 26, 'pitch': 8, 'hdr_pitch': 8,  'comp': False, 'endian': 2}  # RGBA16
+    if bit_count == 32 and r_mask == 0xFFFFFFFF and g_mask == 0 and b_mask == 0 and a_mask == 0:
+        return {'idx': 36, 'pitch': 4, 'hdr_pitch': 4,  'comp': False, 'endian': 2}  # R32F / R32
+    # Fallback: generic RGBA8
+    if bpp == 4:
+        return {'idx': 6,  'pitch': 4, 'hdr_pitch': 4,  'comp': False, 'endian': 2}
+    if bpp == 2:
+        return {'idx': 10, 'pitch': 2, 'hdr_pitch': 2,  'comp': False, 'endian': 1}
+    if bpp == 1:
+        return {'idx': 2,  'pitch': 1, 'hdr_pitch': 1,  'comp': False, 'endian': 1}
+    return None
+
+# Float/HDR FourCC codes (legacy D3D9 format codes stored as FourCC)
+FLOAT_FOURCC_MAP = {
+    b'\x6F\x00\x00\x00': {'idx': 30, 'pitch': 2,  'hdr_pitch': 2,  'comp': False, 'endian': 1},  # D3DFMT_R16F (111)
+    b'\x70\x00\x00\x00': {'idx': 31, 'pitch': 4,  'hdr_pitch': 4,  'comp': False, 'endian': 2},  # D3DFMT_G16R16F (112)
+    b'\x71\x00\x00\x00': {'idx': 32, 'pitch': 8,  'hdr_pitch': 8,  'comp': False, 'endian': 2},  # D3DFMT_A16B16G16R16F (113)
+    b'\x72\x00\x00\x00': {'idx': 36, 'pitch': 4,  'hdr_pitch': 4,  'comp': False, 'endian': 2},  # D3DFMT_R32F (114)
+    b'\x73\x00\x00\x00': {'idx': 37, 'pitch': 8,  'hdr_pitch': 8,  'comp': False, 'endian': 2},  # D3DFMT_G32R32F (115)
+    b'\x74\x00\x00\x00': {'idx': 38, 'pitch': 16, 'hdr_pitch': 16, 'comp': False, 'endian': 2},  # D3DFMT_A32B32G32R32F (116)
+    b'\x24\x00\x00\x00': {'idx': 26, 'pitch': 8,  'hdr_pitch': 8,  'comp': False, 'endian': 2},  # D3DFMT_A16B16G16R16 (36)
+    b'\x3D\x00\x00\x00': {'idx': 25, 'pitch': 4,  'hdr_pitch': 4,  'comp': False, 'endian': 2},  # D3DFMT_G16R16 (61)
+}
+
+def compute_packed_mip_offsets(mip_infos, is_wider, block_size):
+    """
+    Compute (sx_offset, sy_offset) in block units for each packed mip.
+
+    Square / taller (height >= width):
+      sx = first_bw >> pl            counts down: 4,2,1,0,0,...
+      sy = num_packed - pl           counts down when sx hits 0
+
+    Wider (width > height):
+      sy = first_bh >> pl            counts down: 4,2,1,0,0,...
+      sx = first_bw >> (pl-log2_bh)  counts down when sy hits 0
+    """
     packed = [m for m in mip_infos if m['is_packed']]
     if not packed:
         return {}
@@ -235,16 +324,65 @@ def compute_packed_mip_offsets(mip_infos, is_wider):
             sx = (first_bw >> (pl - log2_bh)) if sy == 0 else 0
             offsets[m['level']] = (sx, sy)
     else:
+        # Work in pixel space for a consistent threshold across compressed (block_size=4)
+        # and uncompressed (block_size=1) formats.
+        #
+        # sx branch: while (first_bw * block_size) >> pl >= 4 pixels
+        #   sx = ((first_bw_px >> pl) // block_size) in block units
+        # tail branch (sy): sy = first_bh >> (tail_pl + 1) in block units
+        #   where tail_pl = pl - pl_tail
+        #   This uses first_bh so taller textures (large first_bh) get larger sy steps.
+        import math
+        first_bw_px = first_bw * block_size
+        pl_tail     = (int(math.log2(first_bw_px // 4)) + 1) if first_bw_px >= 4 else 0
+
         for pl, m in enumerate(packed):
-            sx = first_bw >> pl
-            sy = (num_packed - pl) if sx == 0 else 0
+            if pl < pl_tail:
+                sx = (first_bw_px >> pl) // block_size
+                sy = 0
+            else:
+                tail_pl = pl - pl_tail
+                sy = first_bh >> (tail_pl + 1)
+                sx = 0
             offsets[m['level']] = (sx, sy)
 
     return offsets
 
 # --- MAIN CONVERTER ---
 
-def convert_dds_to_x360(input_path, output_path):
+def resolve_format(fourcc, dds_header, extra_data):
+    """
+    Resolve DDS pixel format to a Xenos format info dict.
+    Priority: FourCC compressed -> float FourCC -> DX10 extended -> uncompressed bitmask.
+    """
+    DDPF_FOURCC = 0x04
+    pf_flags = struct.unpack("<I", dds_header[76:80])[0]
+
+    # 1. FourCC-identified compressed formats
+    if fourcc in FOURCC_FORMAT_MAP:
+        return FOURCC_FORMAT_MAP[fourcc]
+
+    # 2. Legacy D3D float/HDR formats (stored as integer FourCC)
+    if fourcc in FLOAT_FOURCC_MAP:
+        return FLOAT_FOURCC_MAP[fourcc]
+
+    # 3. DX10 extended header
+    if fourcc == b'DX10' and len(extra_data) >= 20:
+        dxgi_fmt = struct.unpack("<I", extra_data[0:4])[0]
+        if dxgi_fmt in DXGI_FORMAT_MAP:
+            return DXGI_FORMAT_MAP[dxgi_fmt]
+        raise Exception(f"Unsupported DXGI format {dxgi_fmt}")
+
+    # 4. Uncompressed bitmask identification
+    if not (pf_flags & DDPF_FOURCC):
+        info = identify_uncompressed_format(dds_header)
+        if info:
+            return info
+
+    raise Exception(f"Unsupported DDS format (FourCC={fourcc!r})")
+
+
+def tile_dds_for_xbox(input_path):
     with open(input_path, 'rb') as f:
         magic = f.read(4)
         if magic != b'DDS ':
@@ -256,11 +394,18 @@ def convert_dds_to_x360(input_path, output_path):
         mips    = struct.unpack("<I", header[24:28])[0]
         fourcc  = header[80:84]
 
-        raw_data = f.read()
+        # DX10 extended header lives right after the main 128-byte header
+        extra_data = f.read(20) if fourcc == b'DX10' else b''
+        raw_data   = f.read()
 
-    f_info     = FORMAT_MAP.get(fourcc, FORMAT_MAP[None])
+    if mips == 0:
+        mips = 1
+
+    f_info     = resolve_format(fourcc, header, extra_data)
     pitch      = f_info['pitch']
+    hdr_pitch  = f_info['hdr_pitch']
     is_comp    = f_info['comp']
+    endian     = f_info['endian']
     block_size = 4 if is_comp else 1
     is_wider   = width > height
 
@@ -269,14 +414,23 @@ def convert_dds_to_x360(input_path, output_path):
 
     # MipAddress = mip0 tiled size / 4096 (GPU address units)
     if is_comp:
-        mip0_tw = align(width, 128); mip0_th = align(height, 128)
-        mip0_tiled = (mip0_tw // block_size) * (mip0_th // block_size) * pitch
+        mip0_tw    = align(width, 128)
+        mip0_th    = align(height, 128)
+        mip0_tbw   = mip0_tw // block_size
+        mip0_tiled = mip0_tbw * (mip0_th // block_size) * pitch
+        # hdr_pitch for compressed = mip0 tiled block-row width / 8
+        hdr_pitch  = mip0_tbw // 8
     else:
-        mip0_tw = align(width, 32); mip0_th = align(height, 32)
+        mip0_tw    = align(width, 32)
+        mip0_th    = align(height, 32)
         mip0_tiled = mip0_tw * mip0_th * pitch
+        # hdr_pitch for uncompressed = bytes per pixel (from format table)
+        hdr_pitch  = f_info['hdr_pitch']
     mip_address = mip0_tiled // 4096
 
-    gpu_header = generate_header(width, height, mips, f_info['idx'], mip_address)
+    fetch_constant = generate_header(width, height, mips, f_info['idx'],
+                                 hdr_pitch, mip_address, endian,
+                                 SwizzleY=2 if is_comp else 0)
 
     output_chunks = []
     src_offset    = 0
@@ -310,8 +464,8 @@ def convert_dds_to_x360(input_path, output_path):
             'is_packed': is_packed,
         })
 
-    first_packed = next((m for m in mip_infos if m['is_packed']), None)
-    packed_offsets = compute_packed_mip_offsets(mip_infos, is_wider)
+    first_packed   = next((m for m in mip_infos if m['is_packed']), None)
+    packed_offsets = compute_packed_mip_offsets(mip_infos, is_wider, block_size)
 
     packed_chunk = None
     if first_packed is not None:
@@ -327,7 +481,7 @@ def convert_dds_to_x360(input_path, output_path):
 
         if not m['is_packed']:
             tiled = tile_level(src_slice, mw, mh, pitch, is_comp)
-            if len(tiled) % chunk_size != 0:
+            if len(tiled) >= chunk_size and len(tiled) % chunk_size != 0:
                 tiled = tiled + b'\x00' * (align(len(tiled), chunk_size) - len(tiled))
             output_chunks.append(bytes(tiled))
         else:
@@ -341,15 +495,21 @@ def convert_dds_to_x360(input_path, output_path):
     if packed_chunk is not None:
         output_chunks.append(bytes(packed_chunk))
 
+    fmt_name = f"idx={f_info['idx']} {'comp' if is_comp else 'linear'} {pitch}bpb"
+    print(f"  {width}x{height}, {mips} mip(s), fourcc={fourcc!r}, {fmt_name}")
+
+    return fetch_constant, output_chunks
+
+def convert_dds_to_x360(input_path, output_path):
+    fetch_constant, output_chunks = tile_dds_for_xbox(input_path)
     with open(output_path, 'wb') as out:
-        out.write(gpu_header)
+        out.write(fetch_constant)
         for chunk in output_chunks:
             out.write(chunk)
 
     total = sum(len(c) for c in output_chunks)
     print(f"Converted {input_path} -> {output_path}")
-    print(f"  {width}x{height}, {mips} mips, fourcc={fourcc}")
-    print(f"  Header: {len(gpu_header)} bytes | Data: {hex(total)} bytes | Total: {hex(len(gpu_header)+total)}")
+    print(f"  Fetch Constant: {len(fetch_constant)}B | Data: {hex(total)} | Total: {hex(len(fetch_constant)+total)}")
 
 
 if __name__ == "__main__":
