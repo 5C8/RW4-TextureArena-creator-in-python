@@ -80,7 +80,7 @@ def process_single_texture(full_path, mode, platform, folder_base):
     if name_no_ext.endswith(".Texture"):
         name_no_ext = name_no_ext[:-8]
     if mode == "multi":
-        internal_name = f"{name_no_ext}.Texture" #{folder_base}\\
+        internal_name = f"{folder_base}\\{name_no_ext}.Texture"
     else:
         internal_name = f"{name_no_ext}.Texture"
 
