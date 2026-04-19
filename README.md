@@ -4,4 +4,4 @@ single|multi = create single multi-texture arena or single texture arenas for ea
 
 ps3|xbox = platform
 
-folder_path = path to folder where you have your dds files (Note that i've only added support for DXT1 and DXT5, however its easy to add support for more.)
+folder_path = path to folder where you have your dds files
